@@ -2,6 +2,7 @@ import cv2
 import mediapipe as mp
 import os
 import time
+from ffpyplayer.player import MediaPlayer
 
 # 1. Setup MediaPipe
 mp_face_mesh = mp.solutions.face_mesh
@@ -14,8 +15,9 @@ if not os.path.exists(video_path):
     exit()
 
 # Try opening with the MSMF backend for better .mov support on Windows
-video_cap = cv2.VideoCapture(video_path, cv2.CAP_MSMF)
+video_cap = cv2.VideoCapture(video_path)
 cap = cv2.VideoCapture(0)
+player = None
 
 
 video_window_name = "GET BACK TO WORK"
@@ -23,7 +25,7 @@ window_open = False
 
 # Track time looking away
 away_start_time = None
-AWAY_THRESHOLD = 60  # seconds
+AWAY_THRESHOLD = 5  # seconds
 
 
 while cap.isOpened():
@@ -50,7 +52,14 @@ while cap.isOpened():
 
     current_time = time.time()
 
-    if looking_down:
+
+# Logic: If looking right (at iPad), we are NOT "away"
+    if looking_right:
+        away_start_time = None
+        away_duration = 0
+        looking_down = False # Force this to false so the video doesn't trigger
+    
+    elif looking_down:
         if away_start_time is None:
             away_start_time = current_time
         away_duration = current_time - away_start_time
@@ -59,23 +68,35 @@ while cap.isOpened():
         away_duration = 0
 
     # Only play video if looking down (not right) for more than threshold
-    if looking_down and away_start_time is not None and away_duration >= AWAY_THRESHOLD:
+    if looking_down and away_duration >= AWAY_THRESHOLD:
+        # Initialize player if it's the first time or it was closed
+        if player is None:
+            player = MediaPlayer(video_path)
+        
         ret, v_frame = video_cap.read()
-        # If we hit the end of the .mov, loop it
-        if not ret:
+        audio_frame, val = player.get_frame() # Get the audio sync
+
+        if not ret: # Loop video and audio
             video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            player.seek(0, relative=False)
             ret, v_frame = video_cap.read()
+
         if ret and v_frame is not None:
-            # v_frame = cv2.resize(v_frame, (640, 360))
             cv2.imshow(video_window_name, v_frame)
+            cv2.setWindowProperty(video_window_name, cv2.WND_PROP_TOPMOST, 1)
             window_open = True
+            
+            # Sync audio: If the audio is lagging, this helps catch up
+            if val != 'eof' and audio_frame is not None:
+                img, t = audio_frame
     else:
         if window_open:
-            try:
-                cv2.destroyWindow(video_window_name)
-                window_open = False
-            except:
-                pass
+            cv2.destroyWindow(video_window_name)
+            window_open = False
+            if player:
+                player.close_player()
+                player = None
+            video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Reset video for next time
 
     # Basic preview so you can see the detection status
     status_color = (0, 0, 255) if looking_down else (0, 255, 0)
